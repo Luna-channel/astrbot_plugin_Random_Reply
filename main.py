@@ -6,7 +6,7 @@ import os
 import json
 from typing import Tuple, Optional, Dict, Set, List, Any
 
-@register("astrbot_plugin_weakblacklist", "和泉智宏", "弱黑名单插件 ", "1.2", "https://github.com/0d00-Ciallo-0721/astrbot_plugin_weakblackl")
+@register("astrbot_plugin_random_reply", "和泉智宏＆柯尔魔改", "rrbot机器人防尬聊插件", "v0.1", "https://github.com/Luna-channel/random-reply")
 class WeakBlacklistPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -193,10 +193,6 @@ class WeakBlacklistPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def check_weak_blacklist(self, event: AstrMessageEvent):
         """检查弱黑名单并进行概率判断，包含保底回复机制"""
-        # 管理命令优先处理
-        if await self._handle_weakblacklist_command(event):
-            return
-
         # 检查是否在黑名单中
         is_blacklisted, blacklist_type, target_id = self._check_blacklist_status(event)
         
@@ -315,57 +311,117 @@ class WeakBlacklistPlugin(Star):
         self._save_interception_counters()
         logger.info("弱黑名单插件已停用，拦截计数已保存。")
 
-    async def _handle_weakblacklist_command(self, event: AstrMessageEvent) -> bool:
-        """处理 /rrbot 相关命令"""
-        message_text = (event.message_str or "").strip()
-        prefix = self.command_prefix.lower()
-        if not message_text.lower().startswith(prefix):
-            return False
-
-        parts = message_text.split()
-        if len(parts) < 2:
-            await self._reply_text(event, f"请使用 {self.command_prefix} <识别码> help")
-            return True
-
+    @filter.command("rrbot")
+    async def _cmd_rrbot(self, event: AstrMessageEvent):
+        """
+        处理 /rrbot 命令
+        格式: /rrbot <识别码> <子命令> [参数...]
+        """
+        text = (event.message_str or "").strip()
+        
+        # 动态处理主命令和参数
+        command_parts = text.lstrip('/').split()
+        if not command_parts:
+            return
+        
+        # 提取参数（去掉命令本身）
+        args_str = " ".join(command_parts[1:]) if len(command_parts) > 1 else ""
+        args = args_str.split()
+        
+        def reply(msg: str):
+            return event.plain_result(msg)
+        
+        # 检查识别码
         if not self.command_identifier:
-            await self._reply_text(event, "未配置识别码，/rrbot 命令不可用。")
-            return True
-
-        identifier = parts[1]
+            yield reply("未配置识别码，/rrbot 命令不可用。")
+            return
+        
+        if len(args) < 1:
+            yield reply(f"请使用 {self.command_prefix} <识别码> help")
+            return
+        
+        identifier = args[0]
         if identifier != self.command_identifier:
-            return False
-
-        if len(parts) == 2:
-            await self._handle_command_help(event)
-            return True
-
-        subcommand = parts[2].lower()
-        if subcommand == "help":
-            await self._handle_command_help(event)
-            return True
+            # 识别码不匹配，不处理
+            return
+        
+        # 提取子命令
+        subcommand = args[1].lower() if len(args) > 1 else ""
+        
+        # 帮助信息
+        if not subcommand or subcommand == "help":
+            yield reply(self._get_help_text())
+            return
+        
+        # 列表命令
         if subcommand == "list":
-            await self._handle_command_list(event)
-            return True
-
+            yield reply(self._get_list_text())
+            return
+        
+        # 添加/移除命令
         if subcommand in {"add", "remove"}:
-            target_type, target_id = self._parse_command_target(parts[3:])
+            target_type, target_id = self._parse_command_target(args[2:])
             if not target_id:
-                await self._reply_text(event, f"格式错误，应为：{self.command_prefix} {self.command_identifier} add/remove [user|group] <QQ号/群号>")
-                return True
-
+                yield reply(f"格式错误，应为：{self.command_prefix} {self.command_identifier} add/remove [user|group] <QQ号/群号>")
+                return
+            
             if subcommand == "add":
                 success, feedback = self._add_to_managed_blacklist(target_type, target_id)
             else:
                 success, feedback = self._remove_from_managed_blacklist(target_type, target_id)
-
-            await self._reply_text(event, feedback)
+            
+            yield reply(feedback)
             if success:
-                # 更新日志
                 logger.info(f"弱黑名单命令：{subcommand} {target_type} {target_id} by {event.get_sender_id()}")
-            return True
+            return
+        
+        # 未知子命令
+        yield reply(f"未知子命令：{subcommand}")
 
-        await self._reply_text(event, f"未知子命令：{subcommand}")
-        return True
+    def _get_help_text(self) -> str:
+        """返回帮助文本"""
+        identifier_hint = self.command_identifier or "<识别码>"
+        lines = [
+            "随机回复插件命令帮助：",
+            f"{self.command_prefix} {identifier_hint} help  - 查看该帮助",
+            f"{self.command_prefix} {identifier_hint} list  - 查看当前弱黑名单及拦截计数",
+            f"{self.command_prefix} {identifier_hint} add [user|group] <ID>    - 添加用户或群聊到弱黑名单（默认 user）",
+            f"{self.command_prefix} {identifier_hint} remove [user|group] <ID> - 从动态弱黑名单移除指定目标"
+        ]
+        return "\n".join(lines)
+    
+    def _get_list_text(self) -> str:
+        """返回列表文本"""
+        users, groups = self._get_combined_blacklists()
+        user_cfg = self._get_user_config()
+        group_cfg = self._get_group_config()
+        users_enabled = bool(user_cfg.get("enable", True))
+        groups_enabled = bool(group_cfg.get("enable", True))
+        lines = ["弱黑名单当前状态："]
+
+        if not users_enabled:
+            lines.append("用户弱黑名单：已禁用。")
+        elif users:
+            lines.append("用户：")
+            for uid in sorted(users):
+                count = self.user_interception_counters.get(uid, 0)
+                source = "动态" if uid in self.managed_blacklisted_users else "配置"
+                lines.append(f"- {uid}（{source}，拦截 {count} 次）")
+        else:
+            lines.append("用户黑名单为空。")
+
+        if not groups_enabled:
+            lines.append("群聊弱黑名单：已禁用。")
+        elif groups:
+            lines.append("群聊：")
+            for gid in sorted(groups):
+                count = self.group_interception_counters.get(gid, 0)
+                source = "动态" if gid in self.managed_blacklisted_groups else "配置"
+                lines.append(f"- {gid}（{source}，拦截 {count} 次）")
+        else:
+            lines.append("群聊黑名单为空。")
+
+        return "\n".join(lines)
 
     def _parse_command_target(self, args: List[str]) -> Tuple[str, Optional[str]]:
         """解析命令中的目标类型与ID"""
@@ -440,58 +496,3 @@ class WeakBlacklistPlugin(Star):
             return False, f"用户 {target_id} 来自配置文件，如需移除请在后台/配置中操作。"
         return False, f"用户 {target_id} 不在动态黑名单中。"
 
-    async def _handle_command_list(self, event: AstrMessageEvent):
-        """处理 list 命令，列出黑名单状态"""
-        users, groups = self._get_combined_blacklists()
-        user_cfg = self._get_user_config()
-        group_cfg = self._get_group_config()
-        users_enabled = bool(user_cfg.get("enable", True))
-        groups_enabled = bool(group_cfg.get("enable", True))
-        lines = ["弱黑名单当前状态："]
-
-        if not users_enabled:
-            lines.append("用户弱黑名单：已禁用。")
-        elif users:
-            lines.append("用户：")
-            for uid in sorted(users):
-                count = self.user_interception_counters.get(uid, 0)
-                source = "动态" if uid in self.managed_blacklisted_users else "配置"
-                lines.append(f"- {uid}（{source}，拦截 {count} 次）")
-        else:
-            lines.append("用户黑名单为空。")
-
-        if not groups_enabled:
-            lines.append("群聊弱黑名单：已禁用。")
-        elif groups:
-            lines.append("群聊：")
-            for gid in sorted(groups):
-                count = self.group_interception_counters.get(gid, 0)
-                source = "动态" if gid in self.managed_blacklisted_groups else "配置"
-                lines.append(f"- {gid}（{source}，拦截 {count} 次）")
-        else:
-            lines.append("群聊黑名单为空。")
-
-        await self._reply_text(event, "\n".join(lines))
-
-    async def _handle_command_help(self, event: AstrMessageEvent):
-        """处理 help 命令，展示帮助信息"""
-        identifier_hint = self.command_identifier or "<识别码>"
-        lines = [
-            "随机回复插件命令帮助：",
-            f"{self.command_prefix} {identifier_hint} help  - 查看该帮助",
-            f"{self.command_prefix} {identifier_hint} list  - 查看当前弱黑名单及拦截计数",
-            f"{self.command_prefix} {identifier_hint} add [user|group] <ID>    - 添加用户或群聊到弱黑名单（默认 user）",
-            f"{self.command_prefix} {identifier_hint} remove [user|group] <ID> - 从动态弱黑名单移除指定目标"
-        ]
-        await self._reply_text(event, "\n".join(lines))
-
-    async def _reply_text(self, event: AstrMessageEvent, text: str):
-        """向当前事件回复纯文本"""
-        try:
-            await event.reply(text)
-        except Exception:
-            try:
-                from astrbot.api.message_components import Plain
-                await event.reply([Plain(text=text)])
-            except Exception as e:
-                logger.error(f"发送命令回复失败: {e}")
