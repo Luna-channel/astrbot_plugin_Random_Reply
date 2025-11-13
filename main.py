@@ -4,7 +4,7 @@ from astrbot.api import logger, AstrBotConfig
 import random
 import os
 import json
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, Set, List, Any
 
 @register("astrbot_plugin_weakblacklist", "和泉智宏", "弱黑名单插件 ", "1.2", "https://github.com/0d00-Ciallo-0721/astrbot_plugin_weakblackl")
 class WeakBlacklistPlugin(Star):
@@ -17,15 +17,28 @@ class WeakBlacklistPlugin(Star):
         os.makedirs(self.data_dir, exist_ok=True)
         self.user_counters_path = os.path.join(self.data_dir, "user_interception_counters.json")
         self.group_counters_path = os.path.join(self.data_dir, "group_interception_counters.json")
+        self.managed_blacklist_path = os.path.join(self.data_dir, "managed_blacklist.json")
         
         # 加载拦截计数器
         self.user_interception_counters: Dict[str, int] = {}
         self.group_interception_counters: Dict[str, int] = {}
         self._load_interception_counters()
+
+        # 动态维护的黑名单
+        self.managed_blacklisted_users: Set[str] = set()
+        self.managed_blacklisted_groups: Set[str] = set()
+        self._load_managed_blacklist()
+
+        # 指令识别码
+        self.command_identifier = str(self.config.get("command_identifier", "")).strip()
+        if not self.command_identifier:
+            logger.warning("未配置 command_identifier，/rrbot 命令已禁用。")
         
+        # 命令前缀
+        self.command_prefix = "/rrbot"
+
         # 日志记录插件初始化状态
-        blacklisted_users = set(str(uid) for uid in self.config.get("blacklisted_users", []))
-        blacklisted_groups = set(str(gid) for gid in self.config.get("blacklisted_groups", []))
+        blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
         logger.info(f"弱黑名单插件已加载，用户黑名单: {len(blacklisted_users)} 个，群聊黑名单: {len(blacklisted_groups)} 个")
 
     def _load_interception_counters(self):
@@ -73,19 +86,105 @@ class WeakBlacklistPlugin(Star):
         except Exception as e:
             logger.error(f"保存拦截计数器失败: {e}")
 
+    def _load_managed_blacklist(self):
+        """加载通过命令动态维护的黑名单"""
+        try:
+            if os.path.exists(self.managed_blacklist_path):
+                with open(self.managed_blacklist_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    users = data.get("users", [])
+                    groups = data.get("groups", [])
+                    self.managed_blacklisted_users = {str(uid) for uid in users}
+                    self.managed_blacklisted_groups = {str(gid) for gid in groups}
+            else:
+                self.managed_blacklisted_users = set()
+                self.managed_blacklisted_groups = set()
+        except (json.JSONDecodeError, Exception) as e:
+            logger.error(f"加载动态黑名单失败: {e}")
+            self.managed_blacklisted_users = set()
+            self.managed_blacklisted_groups = set()
+
+    def _save_managed_blacklist(self):
+        """保存通过命令动态维护的黑名单"""
+        try:
+            payload = {
+                "users": sorted(self.managed_blacklisted_users),
+                "groups": sorted(self.managed_blacklisted_groups)
+            }
+            with open(self.managed_blacklist_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存动态黑名单失败: {e}")
+
+    def _get_config_section(self, key: str) -> Dict[str, Any]:
+        """安全获取配置中的子对象"""
+        value = self.config.get(key, {})
+        if isinstance(value, dict):
+            return value
+        logger.warning(f"配置项 {key} 不是对象类型，已忽略。")
+        return {}
+
+    def _get_user_config(self) -> Dict[str, Any]:
+        return self._get_config_section("user_settings")
+
+    def _get_group_config(self) -> Dict[str, Any]:
+        return self._get_config_section("group_settings")
+
+    def _get_reply_probability(self, blacklist_type: str) -> float:
+        if blacklist_type == "group":
+            group_cfg = self._get_group_config()
+            value = group_cfg.get("reply_probability", self.config.get("group_reply_probability", 0.3))
+        else:
+            user_cfg = self._get_user_config()
+            value = user_cfg.get("reply_probability", self.config.get("reply_probability", 0.3))
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            logger.warning(f"{blacklist_type} reply_probability 配置值 '{value}' 非法，使用默认值 0.3")
+            return 0.3
+
+    def _get_max_interception_count(self, blacklist_type: str) -> Any:
+        if blacklist_type == "group":
+            group_cfg = self._get_group_config()
+            return group_cfg.get("max_interception_count", self.config.get("max_group_interception_count", 8))
+        user_cfg = self._get_user_config()
+        return user_cfg.get("max_interception_count", self.config.get("max_interception_count", 5))
+
+    def _get_combined_blacklists(self) -> Tuple[Set[str], Set[str]]:
+        """合并配置中的黑名单与动态维护的黑名单"""
+        user_cfg = self._get_user_config()
+        users_enabled = bool(user_cfg.get("enable", True))
+        group_cfg = self._get_group_config()
+        groups_enabled = bool(group_cfg.get("enable", True))
+
+        config_users: Set[str] = set()
+        if users_enabled:
+            config_users.update(str(uid) for uid in user_cfg.get("blacklisted_users", []))
+            # 向后兼容旧配置
+            config_users.update(str(uid) for uid in self.config.get("blacklisted_users", []))
+            config_users.update(self.managed_blacklisted_users)
+
+        config_groups: Set[str] = set()
+        if groups_enabled:
+            config_groups.update(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
+            # 向后兼容旧配置
+            config_groups.update(str(gid) for gid in self.config.get("blacklisted_groups", []))
+            config_groups.update(self.managed_blacklisted_groups)
+
+        return config_users, config_groups
+
     def _check_blacklist_status(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str], Optional[str]]:
         """直接从配置检查消息是否来自黑名单用户或群聊"""
         sender_id = str(event.get_sender_id())
         group_id = event.get_group_id()
 
         # 直接从 self.config 获取最新的用户黑名单并检查
-        blacklisted_users = set(str(uid) for uid in self.config.get("blacklisted_users", []))
+        blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
         if sender_id in blacklisted_users:
             return True, "user", sender_id
 
         # 直接从 self.config 获取最新的群聊黑名单并检查
         if group_id:
-            blacklisted_groups = set(str(gid) for gid in self.config.get("blacklisted_groups", []))
             if str(group_id) in blacklisted_groups:
                 return True, "group", str(group_id)
 
@@ -94,6 +193,10 @@ class WeakBlacklistPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def check_weak_blacklist(self, event: AstrMessageEvent):
         """检查弱黑名单并进行概率判断，包含保底回复机制"""
+        # 管理命令优先处理
+        if await self._handle_weakblacklist_command(event):
+            return
+
         # 检查是否在黑名单中
         is_blacklisted, blacklist_type, target_id = self._check_blacklist_status(event)
         
@@ -114,13 +217,13 @@ class WeakBlacklistPlugin(Star):
         
         # 根据黑名单类型获取相应配置
         if blacklist_type == "user":
-            reply_probability = float(self.config.get("reply_probability", 0.3))
-            max_interception_cfg = self.config.get("max_interception_count", 5)
+            reply_probability = self._get_reply_probability("user")
+            max_interception_cfg = self._get_max_interception_count("user")
             current_count = self.user_interception_counters.get(target_id, 0)
             counters_dict = self.user_interception_counters
         else:  # group
-            reply_probability = float(self.config.get("group_reply_probability", 0.3))
-            max_interception_cfg = self.config.get("max_group_interception_count", 8)
+            reply_probability = self._get_reply_probability("group")
+            max_interception_cfg = self._get_max_interception_count("group")
             current_count = self.group_interception_counters.get(target_id, 0)
             counters_dict = self.group_interception_counters
         
@@ -211,3 +314,184 @@ class WeakBlacklistPlugin(Star):
         # 在此一次性保存最后的拦截计数，这是最合适的时机
         self._save_interception_counters()
         logger.info("弱黑名单插件已停用，拦截计数已保存。")
+
+    async def _handle_weakblacklist_command(self, event: AstrMessageEvent) -> bool:
+        """处理 /rrbot 相关命令"""
+        message_text = (event.message_str or "").strip()
+        prefix = self.command_prefix.lower()
+        if not message_text.lower().startswith(prefix):
+            return False
+
+        parts = message_text.split()
+        if len(parts) < 2:
+            await self._reply_text(event, f"请使用 {self.command_prefix} <识别码> help")
+            return True
+
+        if not self.command_identifier:
+            await self._reply_text(event, "未配置识别码，/rrbot 命令不可用。")
+            return True
+
+        identifier = parts[1]
+        if identifier != self.command_identifier:
+            return False
+
+        if len(parts) == 2:
+            await self._handle_command_help(event)
+            return True
+
+        subcommand = parts[2].lower()
+        if subcommand == "help":
+            await self._handle_command_help(event)
+            return True
+        if subcommand == "list":
+            await self._handle_command_list(event)
+            return True
+
+        if subcommand in {"add", "remove"}:
+            target_type, target_id = self._parse_command_target(parts[3:])
+            if not target_id:
+                await self._reply_text(event, f"格式错误，应为：{self.command_prefix} {self.command_identifier} add/remove [user|group] <QQ号/群号>")
+                return True
+
+            if subcommand == "add":
+                success, feedback = self._add_to_managed_blacklist(target_type, target_id)
+            else:
+                success, feedback = self._remove_from_managed_blacklist(target_type, target_id)
+
+            await self._reply_text(event, feedback)
+            if success:
+                # 更新日志
+                logger.info(f"弱黑名单命令：{subcommand} {target_type} {target_id} by {event.get_sender_id()}")
+            return True
+
+        await self._reply_text(event, f"未知子命令：{subcommand}")
+        return True
+
+    def _parse_command_target(self, args: List[str]) -> Tuple[str, Optional[str]]:
+        """解析命令中的目标类型与ID"""
+        if not args:
+            return "user", None
+
+        first = args[0].lower()
+        if first in {"user", "u", "group", "g"}:
+            target_type = "group" if first in {"group", "g"} else "user"
+            if len(args) < 2:
+                return target_type, None
+            target_id = args[1]
+        else:
+            target_type = "user"
+            target_id = args[0]
+
+        target_id = target_id.strip()
+        if not target_id:
+            return target_type, None
+
+        return target_type, target_id
+
+    def _add_to_managed_blacklist(self, target_type: str, target_id: str) -> Tuple[bool, str]:
+        """向动态黑名单中添加目标"""
+        target_id = str(target_id)
+        user_cfg = self._get_user_config()
+        group_cfg = self._get_group_config()
+        config_users = set(str(uid) for uid in user_cfg.get("blacklisted_users", []))
+        config_users.update(str(uid) for uid in self.config.get("blacklisted_users", []))
+        config_groups = set(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
+        config_groups.update(str(gid) for gid in self.config.get("blacklisted_groups", []))
+
+        if target_type == "group":
+            if target_id in config_groups or target_id in self.managed_blacklisted_groups:
+                return False, f"群聊 {target_id} 已存在于黑名单中。"
+            self.managed_blacklisted_groups.add(target_id)
+        else:
+            if target_id in config_users or target_id in self.managed_blacklisted_users:
+                return False, f"用户 {target_id} 已存在于黑名单中。"
+            self.managed_blacklisted_users.add(target_id)
+
+        self._save_managed_blacklist()
+        return True, f"已将 {target_type} {target_id} 添加至弱黑名单。"
+
+    def _remove_from_managed_blacklist(self, target_type: str, target_id: str) -> Tuple[bool, str]:
+        """从动态黑名单中移除目标"""
+        target_id = str(target_id)
+
+        if target_type == "group":
+            if target_id in self.managed_blacklisted_groups:
+                self.managed_blacklisted_groups.remove(target_id)
+                self.group_interception_counters.pop(target_id, None)
+                self._save_managed_blacklist()
+                return True, f"已将群聊 {target_id} 从弱黑名单移除。"
+            group_cfg = self._get_group_config()
+            config_groups = set(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
+            config_groups.update(str(gid) for gid in self.config.get("blacklisted_groups", []))
+            if target_id in config_groups:
+                return False, f"群聊 {target_id} 来自配置文件，如需移除请在后台/配置中操作。"
+            return False, f"群聊 {target_id} 不在动态黑名单中。"
+
+        if target_id in self.managed_blacklisted_users:
+            self.managed_blacklisted_users.remove(target_id)
+            self.user_interception_counters.pop(target_id, None)
+            self._save_managed_blacklist()
+            return True, f"已将用户 {target_id} 从弱黑名单移除。"
+
+        user_cfg = self._get_user_config()
+        config_users = set(str(uid) for uid in user_cfg.get("blacklisted_users", []))
+        config_users.update(str(uid) for uid in self.config.get("blacklisted_users", []))
+        if target_id in config_users:
+            return False, f"用户 {target_id} 来自配置文件，如需移除请在后台/配置中操作。"
+        return False, f"用户 {target_id} 不在动态黑名单中。"
+
+    async def _handle_command_list(self, event: AstrMessageEvent):
+        """处理 list 命令，列出黑名单状态"""
+        users, groups = self._get_combined_blacklists()
+        user_cfg = self._get_user_config()
+        group_cfg = self._get_group_config()
+        users_enabled = bool(user_cfg.get("enable", True))
+        groups_enabled = bool(group_cfg.get("enable", True))
+        lines = ["弱黑名单当前状态："]
+
+        if not users_enabled:
+            lines.append("用户弱黑名单：已禁用。")
+        elif users:
+            lines.append("用户：")
+            for uid in sorted(users):
+                count = self.user_interception_counters.get(uid, 0)
+                source = "动态" if uid in self.managed_blacklisted_users else "配置"
+                lines.append(f"- {uid}（{source}，拦截 {count} 次）")
+        else:
+            lines.append("用户黑名单为空。")
+
+        if not groups_enabled:
+            lines.append("群聊弱黑名单：已禁用。")
+        elif groups:
+            lines.append("群聊：")
+            for gid in sorted(groups):
+                count = self.group_interception_counters.get(gid, 0)
+                source = "动态" if gid in self.managed_blacklisted_groups else "配置"
+                lines.append(f"- {gid}（{source}，拦截 {count} 次）")
+        else:
+            lines.append("群聊黑名单为空。")
+
+        await self._reply_text(event, "\n".join(lines))
+
+    async def _handle_command_help(self, event: AstrMessageEvent):
+        """处理 help 命令，展示帮助信息"""
+        identifier_hint = self.command_identifier or "<识别码>"
+        lines = [
+            "随机回复插件命令帮助：",
+            f"{self.command_prefix} {identifier_hint} help  - 查看该帮助",
+            f"{self.command_prefix} {identifier_hint} list  - 查看当前弱黑名单及拦截计数",
+            f"{self.command_prefix} {identifier_hint} add [user|group] <ID>    - 添加用户或群聊到弱黑名单（默认 user）",
+            f"{self.command_prefix} {identifier_hint} remove [user|group] <ID> - 从动态弱黑名单移除指定目标"
+        ]
+        await self._reply_text(event, "\n".join(lines))
+
+    async def _reply_text(self, event: AstrMessageEvent, text: str):
+        """向当前事件回复纯文本"""
+        try:
+            await event.reply(text)
+        except Exception:
+            try:
+                from astrbot.api.message_components import Plain
+                await event.reply([Plain(text=text)])
+            except Exception as e:
+                logger.error(f"发送命令回复失败: {e}")
