@@ -6,41 +6,19 @@ import os
 import json
 from typing import Tuple, Optional, Dict, Set, List, Any
 
-@register("astrbot_plugin_random_reply", "和泉智宏＆柯尔魔改", "rrbot机器人防尬聊插件", "v0.1", "https://github.com/Luna-channel/random-reply")
+
+@register("astrbot_plugin_random_reply", "和泉智宏＆柯尔魔改", "rrbot机器人防尬聊插件", "v0.3", "https://github.com/Luna-channel/random-reply")
 class WeakBlacklistPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
-        super().__init__(context)
-        self.config = config
-        
-        # 初始化保底回复计数器存储路径
-        self.data_dir = os.path.join("data", "WeakBlacklist")
-        os.makedirs(self.data_dir, exist_ok=True)
-        self.user_counters_path = os.path.join(self.data_dir, "user_interception_counters.json")
-        self.group_counters_path = os.path.join(self.data_dir, "group_interception_counters.json")
-        self.managed_blacklist_path = os.path.join(self.data_dir, "managed_blacklist.json")
-        
-        # 加载拦截计数器
-        self.user_interception_counters: Dict[str, int] = {}
-        self.group_interception_counters: Dict[str, int] = {}
-        self._load_interception_counters()
-
-        # 动态维护的黑名单
-        self.managed_blacklisted_users: Set[str] = set()
-        self.managed_blacklisted_groups: Set[str] = set()
-        self._load_managed_blacklist()
-
-        # 指令识别码
-        self.command_identifier = str(self.config.get("command_identifier", "")).strip()
-        if not self.command_identifier:
-            logger.warning("未配置 command_identifier，/rrbot 命令已禁用。")
-        
-        # 命令前缀
-        self.command_prefix = "/rrbot"
-
-        # 日志记录插件初始化状态
-        blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
-        logger.info(f"弱黑名单插件已加载，用户黑名单: {len(blacklisted_users)} 个，群聊黑名单: {len(blacklisted_groups)} 个")
-
+    """
+    弱黑名单插件 - 防止多个机器人在群聊中无限对话
+    
+    生命周期：
+    - __init__: 插件初始化，加载配置和持久化数据
+    - terminate: 插件卸载时，执行数据持久化（保存拦截计数器、同步动态黑名单到配置）
+    """
+    
+    # ==================== 数据持久化方法 ====================
+    
     def _load_interception_counters(self):
         """加载用户和群聊被拦截次数记录"""
         # 加载用户拦截计数器
@@ -107,15 +85,21 @@ class WeakBlacklistPlugin(Star):
     def _save_managed_blacklist(self):
         """保存通过命令动态维护的黑名单"""
         try:
+            # 保存到独立文件
             payload = {
                 "users": sorted(self.managed_blacklisted_users),
                 "groups": sorted(self.managed_blacklisted_groups)
             }
             with open(self.managed_blacklist_path, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
+            
+            # 同步到配置文件
+            self._sync_managed_blacklist_to_config()
         except Exception as e:
             logger.error(f"保存动态黑名单失败: {e}")
 
+    # ==================== 配置相关方法 ====================
+    
     def _get_config_section(self, key: str) -> Dict[str, Any]:
         """安全获取配置中的子对象"""
         value = self.config.get(key, {})
@@ -125,12 +109,15 @@ class WeakBlacklistPlugin(Star):
         return {}
 
     def _get_user_config(self) -> Dict[str, Any]:
+        """获取用户配置节"""
         return self._get_config_section("user_settings")
 
     def _get_group_config(self) -> Dict[str, Any]:
+        """获取群聊配置节"""
         return self._get_config_section("group_settings")
 
     def _get_reply_probability(self, blacklist_type: str) -> float:
+        """获取回复概率配置"""
         if blacklist_type == "group":
             group_cfg = self._get_group_config()
             value = group_cfg.get("reply_probability", self.config.get("group_reply_probability", 0.3))
@@ -144,6 +131,7 @@ class WeakBlacklistPlugin(Star):
             return 0.3
 
     def _get_max_interception_count(self, blacklist_type: str) -> Any:
+        """获取最大拦截次数配置"""
         if blacklist_type == "group":
             group_cfg = self._get_group_config()
             return group_cfg.get("max_interception_count", self.config.get("max_group_interception_count", 8))
@@ -173,20 +161,65 @@ class WeakBlacklistPlugin(Star):
 
         return config_users, config_groups
 
+    def _sync_managed_blacklist_to_config(self):
+        """将动态维护的黑名单同步到配置文件"""
+        try:
+            # 获取用户配置
+            user_cfg = self._get_user_config()
+            if not isinstance(user_cfg, dict):
+                user_cfg = {}
+            
+            # 合并配置中的用户列表和动态添加的用户列表
+            config_users = set(str(uid) for uid in user_cfg.get("blacklisted_users", []))
+            config_users.update(self.managed_blacklisted_users)
+            
+            # 更新用户配置（使用字典式访问，参考参考插件的实现）
+            if "user_settings" not in self.config:
+                self.config["user_settings"] = {}
+            if not isinstance(self.config["user_settings"], dict):
+                self.config["user_settings"] = {}
+            self.config["user_settings"]["blacklisted_users"] = sorted(list(config_users))
+            
+            # 获取群聊配置
+            group_cfg = self._get_group_config()
+            if not isinstance(group_cfg, dict):
+                group_cfg = {}
+            
+            # 合并配置中的群聊列表和动态添加的群聊列表
+            config_groups = set(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
+            config_groups.update(self.managed_blacklisted_groups)
+            
+            # 更新群聊配置
+            if "group_settings" not in self.config:
+                self.config["group_settings"] = {}
+            if not isinstance(self.config["group_settings"], dict):
+                self.config["group_settings"] = {}
+            self.config["group_settings"]["blacklisted_groups"] = sorted(list(config_groups))
+            
+            # 保存配置（参考参考插件的实现方式）
+            if hasattr(self.config, 'save_config'):
+                self.config.save_config()
+                logger.info(f"已同步动态黑名单到配置：用户 {len(self.managed_blacklisted_users)} 个，群聊 {len(self.managed_blacklisted_groups)} 个")
+            else:
+                logger.warning("配置对象不支持 save_config 方法，无法同步到配置文件")
+        except Exception as e:
+            logger.error(f"同步动态黑名单到配置失败: {e}")
+
+    # ==================== 核心业务逻辑方法 ====================
+    
     def _check_blacklist_status(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str], Optional[str]]:
-        """直接从配置检查消息是否来自黑名单用户或群聊"""
+        """检查消息是否来自黑名单用户或群聊"""
         sender_id = str(event.get_sender_id())
         group_id = event.get_group_id()
 
-        # 直接从 self.config 获取最新的用户黑名单并检查
+        # 获取合并后的黑名单
         blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
+        
         if sender_id in blacklisted_users:
             return True, "user", sender_id
 
-        # 直接从 self.config 获取最新的群聊黑名单并检查
-        if group_id:
-            if str(group_id) in blacklisted_groups:
-                return True, "group", str(group_id)
+        if group_id and str(group_id) in blacklisted_groups:
+            return True, "group", str(group_id)
 
         return False, None, None
 
@@ -203,11 +236,9 @@ class WeakBlacklistPlugin(Star):
             
             if sender_id in self.user_interception_counters:
                 del self.user_interception_counters[sender_id]
-                # 注意：不再每次都保存，而是在插件终止时统一保存
             
             if group_id and str(group_id) in self.group_interception_counters:
                 del self.group_interception_counters[str(group_id)]
-                # 注意：不再每次都保存，而是在插件终止时统一保存
             
             return
         
@@ -273,17 +304,12 @@ class WeakBlacklistPlugin(Star):
                 logger.info(f"弱黑名单拦截 - {log_identifier}, "
                            f"消息: {message_preview}, 拦截计数: {counters_dict[target_id]}/{max_interception_count}")
         
-        # 注意：不再每次都保存，而是在 terminate 中统一保存
-        # self._save_interception_counters() <- 移除此行
-        
         # 设置事件标记
         event.set_extra("weak_blacklist_suppress_reply", should_suppress_reply)
 
     @filter.on_decorating_result(priority=1)
     async def suppress_reply_if_marked(self, event: AstrMessageEvent):
-        """
-        清空最终要发送的消息链。
-        """
+        """清空最终要发送的消息链（如果被标记为需要拦截）"""
         if event.get_extra("weak_blacklist_suppress_reply") is True:
             log_messages = bool(self.config.get("log_blocked_messages", True))
             
@@ -305,12 +331,8 @@ class WeakBlacklistPlugin(Star):
             # 清除标记，避免对同一事件对象的后续影响
             event.set_extra("weak_blacklist_suppress_reply", False)
 
-    async def terminate(self):
-        """插件卸载或关闭时的清理工作"""
-        # 在此一次性保存最后的拦截计数，这是最合适的时机
-        self._save_interception_counters()
-        logger.info("弱黑名单插件已停用，拦截计数已保存。")
-
+    # ==================== 命令处理方法 ====================
+    
     @filter.command("rrbot")
     async def _cmd_rrbot(self, event: AstrMessageEvent):
         """
@@ -496,3 +518,95 @@ class WeakBlacklistPlugin(Star):
             return False, f"用户 {target_id} 来自配置文件，如需移除请在后台/配置中操作。"
         return False, f"用户 {target_id} 不在动态黑名单中。"
 
+    # ==================== 生命周期方法 ====================
+    
+    def __init__(self, context: Context, config: AstrBotConfig):
+        """
+        插件生命周期：初始化阶段
+        
+        在插件被加载时调用，用于：
+        - 初始化数据目录和文件路径
+        - 加载持久化的数据（拦截计数器、动态黑名单）
+        - 读取配置并验证
+        - 初始化运行时状态
+        """
+        super().__init__(context)
+        self.config = config
+        
+        # 初始化数据目录和文件路径
+        self.data_dir = os.path.join("data", "WeakBlacklist")
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.user_counters_path = os.path.join(self.data_dir, "user_interception_counters.json")
+        self.group_counters_path = os.path.join(self.data_dir, "group_interception_counters.json")
+        self.managed_blacklist_path = os.path.join(self.data_dir, "managed_blacklist.json")
+        
+        # 初始化运行时数据
+        self.user_interception_counters: Dict[str, int] = {}
+        self.group_interception_counters: Dict[str, int] = {}
+        self.managed_blacklisted_users: Set[str] = set()
+        self.managed_blacklisted_groups: Set[str] = set()
+        
+        # 加载持久化数据
+        self._load_interception_counters()
+        self._load_managed_blacklist()
+
+        # 读取配置
+        self.command_identifier = str(self.config.get("command_identifier", "")).strip()
+        self.command_prefix = "/rrbot"
+        
+        if not self.command_identifier:
+            logger.warning("未配置 command_identifier，/rrbot 命令已禁用。")
+
+        # 记录初始化状态
+        blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
+        logger.info(
+            f"弱黑名单插件已加载。"
+            f"用户黑名单: {len(blacklisted_users)} 个（动态: {len(self.managed_blacklisted_users)}），"
+            f"群聊黑名单: {len(blacklisted_groups)} 个（动态: {len(self.managed_blacklisted_groups)}）"
+        )
+
+    async def terminate(self):
+        """
+        插件生命周期：卸载或关闭时的数据持久化
+        
+        在插件被卸载、禁用或系统关闭时调用，用于：
+        - 保存所有运行时数据到文件（拦截计数器、动态黑名单）
+        - 同步动态黑名单到配置文件，确保配置与运行时数据一致
+        - 记录最终状态统计信息
+        
+        注意：此方法主要进行数据持久化，不涉及资源清理（如关闭文件、取消任务等）
+        """
+        try:
+            logger.info("弱黑名单插件正在停止，执行数据持久化...")
+            
+            # 保存拦截计数器
+            self._save_interception_counters()
+            logger.debug("拦截计数器已保存")
+            
+            # 保存动态黑名单（会自动同步到配置）
+            if self.managed_blacklisted_users or self.managed_blacklisted_groups:
+                self._save_managed_blacklist()
+                logger.debug("动态黑名单已保存并同步到配置")
+            
+            # 确保配置已同步
+            try:
+                self._sync_managed_blacklist_to_config()
+            except Exception as e:
+                logger.warning(f"最终配置同步时出错（可能已在上一步完成）: {e}")
+            
+            # 统计信息
+            blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
+            logger.info(
+                f"弱黑名单插件已停止。"
+                f"最终状态：用户黑名单 {len(blacklisted_users)} 个，"
+                f"群聊黑名单 {len(blacklisted_groups)} 个，"
+                f"动态添加：用户 {len(self.managed_blacklisted_users)} 个，"
+                f"群聊 {len(self.managed_blacklisted_groups)} 个"
+            )
+        except Exception as e:
+            logger.error(f"插件停止时发生错误: {e}")
+            # 即使出错也尝试保存关键数据
+            try:
+                self._save_interception_counters()
+            except Exception:
+                pass
