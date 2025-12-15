@@ -7,17 +7,9 @@ import json
 from typing import Tuple, Optional, Dict, Set, List, Any
 
 
-@register("astrbot_plugin_random_reply", "和泉智宏＆柯尔魔改", "rrbot机器人防尬聊插件", "v0.3", "https://github.com/Luna-channel/random-reply")
+@register("astrbot_plugin_random_reply", "和泉智宏＆柯尔", "rrbot机器人防尬聊插件", "v0.3", "https://github.com/Luna-channel/random-reply")
 class WeakBlacklistPlugin(Star):
-    """
-    弱黑名单插件 - 防止多个机器人在群聊中无限对话
-    
-    生命周期：
-    - __init__: 插件初始化，加载配置和持久化数据
-    - terminate: 插件卸载时，执行数据持久化（保存拦截计数器、同步动态黑名单到配置）
-    """
-    
-    # ==================== 数据持久化方法 ====================
+    """弱黑名单插件 - 防止多个机器人在群聊中无限对话"""
     
     def _load_interception_counters(self):
         """加载用户和群聊被拦截次数记录"""
@@ -85,28 +77,19 @@ class WeakBlacklistPlugin(Star):
     def _save_managed_blacklist(self):
         """保存通过命令动态维护的黑名单"""
         try:
-            # 保存到独立文件
             payload = {
                 "users": sorted(self.managed_blacklisted_users),
                 "groups": sorted(self.managed_blacklisted_groups)
             }
             with open(self.managed_blacklist_path, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
-            
-            # 同步到配置文件
-            self._sync_managed_blacklist_to_config()
         except Exception as e:
             logger.error(f"保存动态黑名单失败: {e}")
 
-    # ==================== 配置相关方法 ====================
-    
     def _get_config_section(self, key: str) -> Dict[str, Any]:
         """安全获取配置中的子对象"""
         value = self.config.get(key, {})
-        if isinstance(value, dict):
-            return value
-        logger.warning(f"配置项 {key} 不是对象类型，已忽略。")
-        return {}
+        return value if isinstance(value, dict) else {}
 
     def _get_user_config(self) -> Dict[str, Any]:
         """获取用户配置节"""
@@ -148,64 +131,15 @@ class WeakBlacklistPlugin(Star):
         config_users: Set[str] = set()
         if users_enabled:
             config_users.update(str(uid) for uid in user_cfg.get("blacklisted_users", []))
-            # 向后兼容旧配置
-            config_users.update(str(uid) for uid in self.config.get("blacklisted_users", []))
             config_users.update(self.managed_blacklisted_users)
 
         config_groups: Set[str] = set()
         if groups_enabled:
             config_groups.update(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
-            # 向后兼容旧配置
-            config_groups.update(str(gid) for gid in self.config.get("blacklisted_groups", []))
             config_groups.update(self.managed_blacklisted_groups)
 
         return config_users, config_groups
 
-    def _sync_managed_blacklist_to_config(self):
-        """将动态维护的黑名单同步到配置文件"""
-        try:
-            # 获取用户配置
-            user_cfg = self._get_user_config()
-            if not isinstance(user_cfg, dict):
-                user_cfg = {}
-            
-            # 合并配置中的用户列表和动态添加的用户列表
-            config_users = set(str(uid) for uid in user_cfg.get("blacklisted_users", []))
-            config_users.update(self.managed_blacklisted_users)
-            
-            # 更新用户配置（使用字典式访问，参考参考插件的实现）
-            if "user_settings" not in self.config:
-                self.config["user_settings"] = {}
-            if not isinstance(self.config["user_settings"], dict):
-                self.config["user_settings"] = {}
-            self.config["user_settings"]["blacklisted_users"] = sorted(list(config_users))
-            
-            # 获取群聊配置
-            group_cfg = self._get_group_config()
-            if not isinstance(group_cfg, dict):
-                group_cfg = {}
-            
-            # 合并配置中的群聊列表和动态添加的群聊列表
-            config_groups = set(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
-            config_groups.update(self.managed_blacklisted_groups)
-            
-            # 更新群聊配置
-            if "group_settings" not in self.config:
-                self.config["group_settings"] = {}
-            if not isinstance(self.config["group_settings"], dict):
-                self.config["group_settings"] = {}
-            self.config["group_settings"]["blacklisted_groups"] = sorted(list(config_groups))
-            
-            # 保存配置（参考参考插件的实现方式）
-            if hasattr(self.config, 'save_config'):
-                self.config.save_config()
-                logger.info(f"已同步动态黑名单到配置：用户 {len(self.managed_blacklisted_users)} 个，群聊 {len(self.managed_blacklisted_groups)} 个")
-            else:
-                logger.warning("配置对象不支持 save_config 方法，无法同步到配置文件")
-        except Exception as e:
-            logger.error(f"同步动态黑名单到配置失败: {e}")
-
-    # ==================== 核心业务逻辑方法 ====================
     
     def _check_blacklist_status(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str], Optional[str]]:
         """检查消息是否来自黑名单用户或群聊"""
@@ -307,31 +241,15 @@ class WeakBlacklistPlugin(Star):
         # 设置事件标记
         event.set_extra("weak_blacklist_suppress_reply", should_suppress_reply)
 
-    @filter.on_decorating_result(priority=1)
-    async def suppress_reply_if_marked(self, event: AstrMessageEvent):
-        """清空最终要发送的消息链（如果被标记为需要拦截）"""
+    @filter.on_llm_request()
+    async def intercept_llm_request(self, event: AstrMessageEvent, req):
+        """在LLM请求阶段拦截（如果被标记为需要拦截）"""
         if event.get_extra("weak_blacklist_suppress_reply") is True:
-            log_messages = bool(self.config.get("log_blocked_messages", True))
-            
-            current_result = event.get_result()
-            if current_result and hasattr(current_result, 'chain'):
-                if log_messages:
-                    sender_id = str(event.get_sender_id())
-                    group_id = event.get_group_id()
-                    identifier = f"群聊 {group_id} 中的用户 {sender_id}" if group_id else f"用户 {sender_id}"
-                    original_chain_length = len(current_result.chain)
-                    logger.info(f"弱黑名单：替换 {identifier} 的待发送消息链，长度: {original_chain_length}")
-                
-                # 不完全清空消息链，而是替换为一个空文本消息
-                # 这样可以避免其他插件尝试访问chain[0]时出现索引越界错误
-                from astrbot.api.message_components import Plain
-                current_result.chain.clear()
-                current_result.chain.append(Plain(text=""))
-            
-            # 清除标记，避免对同一事件对象的后续影响
+            # 阻止LLM调用，直接设置空结果并停止事件传播
+            # 这样retry插件不会介入，因为根本没有LLM调用发生
+            event.set_result(event.plain_result(""))
+            event.stop_event()
             event.set_extra("weak_blacklist_suppress_reply", False)
-
-    # ==================== 命令处理方法 ====================
     
     @filter.command("rrbot")
     async def _cmd_rrbot(self, event: AstrMessageEvent):
@@ -469,19 +387,14 @@ class WeakBlacklistPlugin(Star):
     def _add_to_managed_blacklist(self, target_type: str, target_id: str) -> Tuple[bool, str]:
         """向动态黑名单中添加目标"""
         target_id = str(target_id)
-        user_cfg = self._get_user_config()
-        group_cfg = self._get_group_config()
-        config_users = set(str(uid) for uid in user_cfg.get("blacklisted_users", []))
-        config_users.update(str(uid) for uid in self.config.get("blacklisted_users", []))
-        config_groups = set(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
-        config_groups.update(str(gid) for gid in self.config.get("blacklisted_groups", []))
+        config_users, config_groups = self._get_combined_blacklists()
 
         if target_type == "group":
-            if target_id in config_groups or target_id in self.managed_blacklisted_groups:
+            if target_id in config_groups:
                 return False, f"群聊 {target_id} 已存在于黑名单中。"
             self.managed_blacklisted_groups.add(target_id)
         else:
-            if target_id in config_users or target_id in self.managed_blacklisted_users:
+            if target_id in config_users:
                 return False, f"用户 {target_id} 已存在于黑名单中。"
             self.managed_blacklisted_users.add(target_id)
 
@@ -498,38 +411,16 @@ class WeakBlacklistPlugin(Star):
                 self.group_interception_counters.pop(target_id, None)
                 self._save_managed_blacklist()
                 return True, f"已将群聊 {target_id} 从弱黑名单移除。"
-            group_cfg = self._get_group_config()
-            config_groups = set(str(gid) for gid in group_cfg.get("blacklisted_groups", []))
-            config_groups.update(str(gid) for gid in self.config.get("blacklisted_groups", []))
-            if target_id in config_groups:
-                return False, f"群聊 {target_id} 来自配置文件，如需移除请在后台/配置中操作。"
-            return False, f"群聊 {target_id} 不在动态黑名单中。"
+            return False, f"群聊 {target_id} 不在动态黑名单中（配置文件中的请在后台操作）。"
 
         if target_id in self.managed_blacklisted_users:
             self.managed_blacklisted_users.remove(target_id)
             self.user_interception_counters.pop(target_id, None)
             self._save_managed_blacklist()
             return True, f"已将用户 {target_id} 从弱黑名单移除。"
+        return False, f"用户 {target_id} 不在动态黑名单中（配置文件中的请在后台操作）。"
 
-        user_cfg = self._get_user_config()
-        config_users = set(str(uid) for uid in user_cfg.get("blacklisted_users", []))
-        config_users.update(str(uid) for uid in self.config.get("blacklisted_users", []))
-        if target_id in config_users:
-            return False, f"用户 {target_id} 来自配置文件，如需移除请在后台/配置中操作。"
-        return False, f"用户 {target_id} 不在动态黑名单中。"
-
-    # ==================== 生命周期方法 ====================
-    
     def __init__(self, context: Context, config: AstrBotConfig):
-        """
-        插件生命周期：初始化阶段
-        
-        在插件被加载时调用，用于：
-        - 初始化数据目录和文件路径
-        - 加载持久化的数据（拦截计数器、动态黑名单）
-        - 读取配置并验证
-        - 初始化运行时状态
-        """
         super().__init__(context)
         self.config = config
         
@@ -557,55 +448,27 @@ class WeakBlacklistPlugin(Star):
         if not self.command_identifier:
             logger.warning("未配置 command_identifier，/rrbot 命令已禁用。")
 
-        # 记录初始化状态
         blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
         logger.info(
-            f"弱黑名单插件已加载。"
-            f"用户黑名单: {len(blacklisted_users)} 个（动态: {len(self.managed_blacklisted_users)}），"
-            f"群聊黑名单: {len(blacklisted_groups)} 个（动态: {len(self.managed_blacklisted_groups)}）"
+            f"弱黑名单插件已加载 - "
+            f"用户: {len(blacklisted_users)}个(动态{len(self.managed_blacklisted_users)}) "
+            f"群聊: {len(blacklisted_groups)}个(动态{len(self.managed_blacklisted_groups)})"
         )
 
     async def terminate(self):
-        """
-        插件生命周期：卸载或关闭时的数据持久化
-        
-        在插件被卸载、禁用或系统关闭时调用，用于：
-        - 保存所有运行时数据到文件（拦截计数器、动态黑名单）
-        - 同步动态黑名单到配置文件，确保配置与运行时数据一致
-        - 记录最终状态统计信息
-        
-        注意：此方法主要进行数据持久化，不涉及资源清理（如关闭文件、取消任务等）
-        """
+        """插件卸载时保存数据"""
         try:
-            logger.info("弱黑名单插件正在停止，执行数据持久化...")
-            
-            # 保存拦截计数器
             self._save_interception_counters()
-            logger.debug("拦截计数器已保存")
-            
-            # 保存动态黑名单（会自动同步到配置）
             if self.managed_blacklisted_users or self.managed_blacklisted_groups:
                 self._save_managed_blacklist()
-                logger.debug("动态黑名单已保存并同步到配置")
             
-            # 确保配置已同步
-            try:
-                self._sync_managed_blacklist_to_config()
-            except Exception as e:
-                logger.warning(f"最终配置同步时出错（可能已在上一步完成）: {e}")
-            
-            # 统计信息
             blacklisted_users, blacklisted_groups = self._get_combined_blacklists()
             logger.info(
-                f"弱黑名单插件已停止。"
-                f"最终状态：用户黑名单 {len(blacklisted_users)} 个，"
-                f"群聊黑名单 {len(blacklisted_groups)} 个，"
-                f"动态添加：用户 {len(self.managed_blacklisted_users)} 个，"
-                f"群聊 {len(self.managed_blacklisted_groups)} 个"
+                f"弱黑名单插件已停止 - "
+                f"用户: {len(blacklisted_users)}个 群聊: {len(blacklisted_groups)}个"
             )
         except Exception as e:
             logger.error(f"插件停止时发生错误: {e}")
-            # 即使出错也尝试保存关键数据
             try:
                 self._save_interception_counters()
             except Exception:
