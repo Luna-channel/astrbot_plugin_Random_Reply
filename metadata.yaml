@@ -1,8 +1,8 @@
 name: astrbot_plugin_random_reply
 display_name: rrbot机器人防尬聊插件
 desc: 为复数机器人群聊设计的防止炸群插件，防止机器人之间无限对话
-version: v0.3
-author: 和泉智宏＆柯尔
+version: v0.4
+author: 柯尔
 repo: https://github.com/Luna-channel/random-reply
 
 

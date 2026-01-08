@@ -7,7 +7,7 @@ import json
 from typing import Tuple, Optional, Dict, Set, List, Any
 
 
-@register("astrbot_plugin_random_reply", "和泉智宏＆柯尔", "rrbot机器人防尬聊插件", "v0.3", "https://github.com/Luna-channel/random-reply")
+@register("astrbot_plugin_random_reply", "柯尔", "rrbot机器人防尬聊插件", "v0.4", "https://github.com/Luna-channel/random-reply")
 class WeakBlacklistPlugin(Star):
     """弱黑名单插件 - 防止多个机器人在群聊中无限对话"""
     
