@@ -59,7 +59,7 @@
 - 动态添加的黑名单在插件重启后仍然有效（已同步到配置）
 
 ## 数据存储
-插件会在 `data/WeakBlacklist/` 目录下创建以下文件：
+插件会在 `data/plugin_data/astrbot_plugin_random_reply/` 目录下创建以下文件：
 - `user_interception_counters.json`：用户拦截计数器
 - `group_interception_counters.json`：群聊拦截计数器
 - `managed_blacklist.json`：动态维护的黑名单（通过命令添加的）
@@ -72,7 +72,7 @@
 - 配置中的 `enable` 开关可以临时禁用某类黑名单，而不需要删除列表
 
 ## 版本信息
-- 版本：v0.3
+- 版本：v0.4.1
 - 作者：柯尔
 - 仓库：https://github.com/Luna-channel/random-reply
 

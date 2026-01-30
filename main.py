@@ -7,7 +7,7 @@ import json
 from typing import Tuple, Optional, Dict, Set, List, Any
 
 
-@register("astrbot_plugin_random_reply", "柯尔", "rrbot机器人防尬聊插件", "v0.4", "https://github.com/Luna-channel/random-reply")
+@register("astrbot_plugin_random_reply", "柯尔", "rrbot机器人防尬聊插件", "v0.4.1", "https://github.com/Luna-channel/random-reply")
 class WeakBlacklistPlugin(Star):
     """弱黑名单插件 - 防止多个机器人在群聊中无限对话"""
     
@@ -420,12 +420,48 @@ class WeakBlacklistPlugin(Star):
             return True, f"已将用户 {target_id} 从弱黑名单移除。"
         return False, f"用户 {target_id} 不在动态黑名单中（配置文件中的请在后台操作）。"
 
+    def _migrate_data_if_needed(self):
+        """从旧数据目录迁移到新目录"""
+        import shutil
+        
+        # 支持多个旧目录（按优先级顺序）
+        old_dirs = [
+            os.path.join("data", "WeakBlacklist"),  # 最早的目录
+            os.path.join("data", "plugin_data", "WeakBlacklist"),  # 之前的迁移目录
+        ]
+        
+        # 检查新目录是否已有数据
+        new_files = os.listdir(self.data_dir) if os.path.exists(self.data_dir) else []
+        if new_files:
+            logger.debug("[RandomReply] 新目录已有数据，跳过迁移")
+            return
+        
+        # 尝试从旧目录迁移
+        for old_data_dir in old_dirs:
+            if os.path.exists(old_data_dir) and os.path.isdir(old_data_dir):
+                old_files = os.listdir(old_data_dir)
+                if old_files:
+                    os.makedirs(self.data_dir, exist_ok=True)
+                    logger.info(f"[RandomReply] 检测到旧数据目录，开始迁移: {old_data_dir} -> {self.data_dir}")
+                    for filename in old_files:
+                        old_path = os.path.join(old_data_dir, filename)
+                        new_path = os.path.join(self.data_dir, filename)
+                        if os.path.isfile(old_path):
+                            shutil.copy2(old_path, new_path)
+                            logger.info(f"[RandomReply] 迁移文件: {filename}")
+                    logger.info(f"[RandomReply] 数据迁移完成，旧目录保留供备份: {old_data_dir}")
+                    return  # 迁移成功后退出
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
         
-        # 初始化数据目录和文件路径
-        self.data_dir = os.path.join("data", "WeakBlacklist")
+        # 初始化数据目录和文件路径（按AstrBot规则使用插件注册名）
+        self.data_dir = os.path.join("data", "plugin_data", "astrbot_plugin_random_reply")
+        
+        # 自动数据迁移：从旧目录迁移到新目录
+        self._migrate_data_if_needed()
+        
         os.makedirs(self.data_dir, exist_ok=True)
         self.user_counters_path = os.path.join(self.data_dir, "user_interception_counters.json")
         self.group_counters_path = os.path.join(self.data_dir, "group_interception_counters.json")
