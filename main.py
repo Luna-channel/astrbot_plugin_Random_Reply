@@ -569,19 +569,42 @@ class WeakBlacklistPlugin(Star):
         # 获取已在黑名单中的用户
         existing_users, _ = self._get_combined_blacklists()
 
+        # 尝试获取原始成员列表（含 nickname + card 双字段）
+        raw_members = None
+        try:
+            bot = getattr(event, 'bot', None)
+            if bot and hasattr(bot, 'call_action'):
+                raw_members = await bot.call_action("get_group_member_list", group_id=int(group_id))
+        except Exception as e:
+            logger.debug(f"[RandomReply] 获取原始成员列表失败，回退到 group.members: {e}")
+
         matched = []
-        for member in group.members:
-            uid = str(member.user_id)
-            nickname = member.nickname or ""
-            # 排除自身
-            if self_id and uid == self_id:
-                continue
-            # 关键字匹配
-            for kw in keyword_list:
-                if kw in nickname:
-                    status = "已在黑名单" if uid in existing_users else "未拉黑"
-                    matched.append({"user_id": uid, "nickname": nickname, "matched_keyword": kw, "status": status})
-                    break
+        if raw_members:
+            # 使用原始数据，同时检查 nickname 和 card（群备注）
+            for m in raw_members:
+                uid = str(m.get("user_id", ""))
+                nickname = m.get("nickname", "") or ""
+                card = m.get("card", "") or ""
+                if self_id and uid == self_id:
+                    continue
+                display_name = card if card else nickname
+                for kw in keyword_list:
+                    if kw in nickname or kw in card:
+                        status = "已在黑名单" if uid in existing_users else "未拉黑"
+                        matched.append({"user_id": uid, "nickname": display_name, "matched_keyword": kw, "status": status})
+                        break
+        else:
+            # 回退：仅使用 group.members（只有 nickname）
+            for member in group.members:
+                uid = str(member.user_id)
+                nickname = member.nickname or ""
+                if self_id and uid == self_id:
+                    continue
+                for kw in keyword_list:
+                    if kw in nickname:
+                        status = "已在黑名单" if uid in existing_users else "未拉黑"
+                        matched.append({"user_id": uid, "nickname": nickname, "matched_keyword": kw, "status": status})
+                        break
 
         if not matched:
             return f"在群 {group_id}（{group.group_name or '未知群名'}）中未找到名字包含关键字 {keyword_list} 的疑似机器人。共扫描 {len(group.members)} 名成员。"
