@@ -384,6 +384,35 @@ class WeakBlacklistPlugin(Star):
 
         return target_type, target_id
 
+    def _sync_to_config(self, target_type: str, target_id: str, action: str = "add"):
+        """将动态黑名单变更同步到 dashboard 配置，使其在后台界面可见"""
+        try:
+            if target_type == "group":
+                cfg_key = "group_settings"
+                list_key = "blacklisted_groups"
+            else:
+                cfg_key = "user_settings"
+                list_key = "blacklisted_users"
+
+            section = self.config.get(cfg_key, {})
+            if not isinstance(section, dict):
+                section = {}
+            current_list = list(section.get(list_key, []))
+
+            if action == "add":
+                if target_id not in current_list:
+                    current_list.append(target_id)
+            elif action == "remove":
+                if target_id in current_list:
+                    current_list.remove(target_id)
+
+            section[list_key] = current_list
+            self.config[cfg_key] = section
+            self.config.save_config()
+            logger.debug(f"已同步弱黑名单变更到配置: {action} {target_type} {target_id}")
+        except Exception as e:
+            logger.error(f"同步黑名单到配置文件失败: {e}")
+
     def _add_to_managed_blacklist(self, target_type: str, target_id: str) -> Tuple[bool, str]:
         """向动态黑名单中添加目标"""
         target_id = str(target_id)
@@ -399,6 +428,7 @@ class WeakBlacklistPlugin(Star):
             self.managed_blacklisted_users.add(target_id)
 
         self._save_managed_blacklist()
+        self._sync_to_config(target_type, target_id, "add")
         return True, f"已将 {target_type} {target_id} 添加至弱黑名单。"
 
     def _remove_from_managed_blacklist(self, target_type: str, target_id: str) -> Tuple[bool, str]:
@@ -410,6 +440,7 @@ class WeakBlacklistPlugin(Star):
                 self.managed_blacklisted_groups.remove(target_id)
                 self.group_interception_counters.pop(target_id, None)
                 self._save_managed_blacklist()
+                self._sync_to_config(target_type, target_id, "remove")
                 return True, f"已将群聊 {target_id} 从弱黑名单移除。"
             return False, f"群聊 {target_id} 不在动态黑名单中（配置文件中的请在后台操作）。"
 
@@ -417,6 +448,7 @@ class WeakBlacklistPlugin(Star):
             self.managed_blacklisted_users.remove(target_id)
             self.user_interception_counters.pop(target_id, None)
             self._save_managed_blacklist()
+            self._sync_to_config(target_type, target_id, "remove")
             return True, f"已将用户 {target_id} 从弱黑名单移除。"
         return False, f"用户 {target_id} 不在动态黑名单中（配置文件中的请在后台操作）。"
 
@@ -498,7 +530,7 @@ class WeakBlacklistPlugin(Star):
         group_id: str,
         keywords: str = "bot,Bot,BOT,机器人,助手",
     ) -> str:
-        """扫描指定QQ群中名字含有特定关键字的疑似机器人账号。仅扫描并返回结果，不会执行添加操作。当用户想要查找群里的机器人时调用此工具。
+        """扫描指定QQ群中名字含有特定关键字的疑似机器人账号。仅扫描并返回结果，不会执行添加操作。当用户想要查找群里的机器人时调用此工具。弱黑名单的作用是防止多个机器人在群聊中互相触发、反复大量聊天，它是一种打断机制：被加入弱黑名单的账号发送的消息会以一定概率被忽略，从而避免机器人之间无限对话。
 
         Args:
             group_id(string): 要扫描的QQ群号
@@ -560,7 +592,7 @@ class WeakBlacklistPlugin(Star):
         event: AstrMessageEvent,
         user_ids: str,
     ) -> str:
-        """将指定的QQ账号批量添加到弱黑名单中。通常在 scan_group_bots 扫描后使用，将疑似机器人添加到弱黑名单。
+        """将指定的QQ账号批量添加到弱黑名单中。通常在 scan_group_bots 扫描后使用，将疑似机器人添加到弱黑名单。弱黑名单是一种打断机制，用于防止多个机器人在群聊中互相触发、反复大量聊天。被加入弱黑名单的账号发送的消息会以一定概率被忽略，而非完全屏蔽。
 
         Args:
             user_ids(string): 要添加到弱黑名单的QQ号列表，用英文逗号分隔，例如 "123456,789012,345678"
