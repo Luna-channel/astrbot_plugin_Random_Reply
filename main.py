@@ -1,6 +1,6 @@
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger, AstrBotConfig
+from astrbot.api import logger, AstrBotConfig, llm_tool
 import random
 import os
 import json
@@ -490,6 +490,102 @@ class WeakBlacklistPlugin(Star):
             f"用户: {len(blacklisted_users)}个(动态{len(self.managed_blacklisted_users)}) "
             f"群聊: {len(blacklisted_groups)}个(动态{len(self.managed_blacklisted_groups)})"
         )
+
+    @llm_tool(name="scan_group_bots")
+    async def scan_group_bots(
+        self,
+        event: AstrMessageEvent,
+        group_id: str,
+        keywords: str = "bot,Bot,BOT,机器人,助手",
+    ) -> str:
+        """扫描指定QQ群中名字含有特定关键字的疑似机器人账号。仅扫描并返回结果，不会执行添加操作。当用户想要查找群里的机器人时调用此工具。
+
+        Args:
+            group_id(string): 要扫描的QQ群号
+            keywords(string): 用于识别机器人的关键字，用英文逗号分隔，默认为 "bot,Bot,BOT,机器人,助手"
+        """
+        try:
+            group = await event.get_group(group_id=group_id)
+        except Exception as e:
+            logger.error(f"[RandomReply] 获取群 {group_id} 信息失败: {e}")
+            return f"获取群 {group_id} 的成员列表失败，可能当前平台不支持此操作或群号无效。错误: {e}"
+
+        if not group or not group.members:
+            return f"无法获取群 {group_id} 的成员列表，可能当前平台不支持此操作、机器人不在该群中或群号无效。"
+
+        keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+        if not keyword_list:
+            return "未提供有效的关键字。"
+
+        # 获取机器人自身ID，避免将自己加入黑名单
+        self_id = str(getattr(event.message_obj, 'self_id', '')) if event.message_obj else ''
+
+        # 获取已在黑名单中的用户
+        existing_users, _ = self._get_combined_blacklists()
+
+        matched = []
+        for member in group.members:
+            uid = str(member.user_id)
+            nickname = member.nickname or ""
+            # 排除自身
+            if self_id and uid == self_id:
+                continue
+            # 关键字匹配
+            for kw in keyword_list:
+                if kw in nickname:
+                    status = "已在黑名单" if uid in existing_users else "未拉黑"
+                    matched.append({"user_id": uid, "nickname": nickname, "matched_keyword": kw, "status": status})
+                    break
+
+        if not matched:
+            return f"在群 {group_id}（{group.group_name or '未知群名'}）中未找到名字包含关键字 {keyword_list} 的疑似机器人。共扫描 {len(group.members)} 名成员。"
+
+        lines = [f"群 {group_id}（{group.group_name or '未知群名'}）扫描结果，共 {len(group.members)} 名成员，发现 {len(matched)} 个疑似机器人："]
+        for m in matched:
+            lines.append(f"- QQ:{m['user_id']} 昵称:\"{m['nickname']}\" 匹配关键字:\"{m['matched_keyword']}\" 状态:{m['status']}")
+
+        new_count = sum(1 for m in matched if m['status'] == '未拉黑')
+        if new_count > 0:
+            lines.append(f"\n其中 {new_count} 个尚未在黑名单中。如需将它们添加到弱黑名单，请调用 batch_add_to_blacklist 工具。")
+        else:
+            lines.append("\n所有匹配的账号均已在黑名单中，无需重复添加。")
+
+        result = "\n".join(lines)
+        logger.info(f"[RandomReply] 扫描群 {group_id} 完成: 发现 {len(matched)} 个疑似机器人")
+        return result
+
+    @llm_tool(name="batch_add_to_blacklist")
+    async def batch_add_to_blacklist(
+        self,
+        event: AstrMessageEvent,
+        user_ids: str,
+    ) -> str:
+        """将指定的QQ账号批量添加到弱黑名单中。通常在 scan_group_bots 扫描后使用，将疑似机器人添加到弱黑名单。
+
+        Args:
+            user_ids(string): 要添加到弱黑名单的QQ号列表，用英文逗号分隔，例如 "123456,789012,345678"
+        """
+        id_list = [uid.strip() for uid in user_ids.split(",") if uid.strip()]
+        if not id_list:
+            return "未提供有效的QQ号。"
+
+        added = []
+        skipped = []
+        for uid in id_list:
+            success, feedback = self._add_to_managed_blacklist("user", uid)
+            if success:
+                added.append(uid)
+                logger.info(f"[RandomReply] 通过工具调用添加用户 {uid} 到弱黑名单")
+            else:
+                skipped.append(f"{uid}({feedback})")
+
+        lines = []
+        if added:
+            lines.append(f"成功添加 {len(added)} 个用户到弱黑名单: {', '.join(added)}")
+        if skipped:
+            lines.append(f"跳过 {len(skipped)} 个用户: {', '.join(skipped)}")
+
+        return "\n".join(lines) if lines else "没有执行任何操作。"
 
     async def terminate(self):
         """插件卸载时保存数据"""
