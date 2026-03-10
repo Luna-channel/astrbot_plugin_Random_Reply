@@ -5,6 +5,12 @@
     "default": "",
     "hint": "为空则禁用所有 /rrbot 指令，需要填写唯一识别码以启用命令。"
   },
+  "bot_scan_keywords": {
+    "description": "机器人扫描关键字",
+    "type": "string",
+    "default": "bot,Bot,BOT,机器人,助手",
+    "hint": "用于 scan_group_bots 工具识别疑似机器人的昵称关键字，用英文逗号分隔。"
+  },
   "user_settings": {
     "description": "用户弱黑名单设置",
     "type": "object",

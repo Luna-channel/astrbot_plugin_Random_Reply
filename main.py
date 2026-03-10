@@ -513,6 +513,9 @@ class WeakBlacklistPlugin(Star):
         self.command_identifier = str(self.config.get("command_identifier", "")).strip()
         self.command_prefix = "/rrbot"
         
+        # 读取机器人扫描关键字配置
+        self.bot_scan_keywords = str(self.config.get("bot_scan_keywords", "bot,Bot,BOT,机器人,助手")).strip()
+        
         if not self.command_identifier:
             logger.warning("未配置 command_identifier，/rrbot 命令已禁用。")
 
@@ -527,15 +530,26 @@ class WeakBlacklistPlugin(Star):
     async def scan_group_bots(
         self,
         event: AstrMessageEvent,
-        group_id: str,
-        keywords: str = "bot,Bot,BOT,机器人,助手",
+        group_id: str = "",
+        keywords: str = "",
     ) -> str:
         """扫描指定QQ群中名字含有特定关键字的疑似机器人账号。仅扫描并返回结果，不会执行添加操作。当用户想要查找群里的机器人时调用此工具。弱黑名单的作用是防止多个机器人在群聊中互相触发、反复大量聊天，它是一种打断机制：被加入弱黑名单的账号发送的消息会以一定概率被忽略，从而避免机器人之间无限对话。
 
         Args:
-            group_id(string): 要扫描的QQ群号
-            keywords(string): 用于识别机器人的关键字，用英文逗号分隔，默认为 "bot,Bot,BOT,机器人,助手"
+            group_id(string): 要扫描的QQ群号，不提供则默认为当前群聊
+            keywords(string): 用于识别机器人的关键字，用英文逗号分隔，不提供则使用后台配置的关键字
         """
+        # 默认当前群
+        if not group_id:
+            group_id = event.get_group_id()
+        if not group_id:
+            return "无法确定要扫描的群号：当前不在群聊中，且未指定 group_id。"
+        group_id = str(group_id)
+
+        # 默认使用配置中的关键字
+        if not keywords:
+            keywords = self.bot_scan_keywords
+
         try:
             group = await event.get_group(group_id=group_id)
         except Exception as e:
@@ -614,6 +628,7 @@ class WeakBlacklistPlugin(Star):
         lines = []
         if added:
             lines.append(f"成功添加 {len(added)} 个用户到弱黑名单: {', '.join(added)}")
+            lines.append("已同步到后台配置的 blacklisted_users 列表（跨群生效）。")
         if skipped:
             lines.append(f"跳过 {len(skipped)} 个用户: {', '.join(skipped)}")
 
