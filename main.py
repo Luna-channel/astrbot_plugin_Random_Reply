@@ -1,9 +1,10 @@
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger, AstrBotConfig, llm_tool
 import random
 import os
 import json
+from pathlib import Path
 from typing import Tuple, Optional, Dict, Set, List, Any
 
 
@@ -23,7 +24,7 @@ class WeakBlacklistPlugin(Star):
                         self.user_interception_counters[key] = int(self.user_interception_counters[key])
             else:
                 self.user_interception_counters = {}
-        except (json.JSONDecodeError, Exception) as e:
+        except (json.JSONDecodeError, OSError, ValueError) as e:
             logger.error(f"加载用户拦截计数器失败: {e}")
             self.user_interception_counters = {}
 
@@ -37,7 +38,7 @@ class WeakBlacklistPlugin(Star):
                         self.group_interception_counters[key] = int(self.group_interception_counters[key])
             else:
                 self.group_interception_counters = {}
-        except (json.JSONDecodeError, Exception) as e:
+        except (json.JSONDecodeError, OSError, ValueError) as e:
             logger.error(f"加载群聊拦截计数器失败: {e}")
             self.group_interception_counters = {}
 
@@ -69,7 +70,7 @@ class WeakBlacklistPlugin(Star):
             else:
                 self.managed_blacklisted_users = set()
                 self.managed_blacklisted_groups = set()
-        except (json.JSONDecodeError, Exception) as e:
+        except (json.JSONDecodeError, OSError, ValueError) as e:
             logger.error(f"加载动态黑名单失败: {e}")
             self.managed_blacklisted_users = set()
             self.managed_blacklisted_groups = set()
@@ -458,29 +459,30 @@ class WeakBlacklistPlugin(Star):
         
         # 支持多个旧目录（按优先级顺序）
         old_dirs = [
-            os.path.join("data", "WeakBlacklist"),  # 最早的目录
-            os.path.join("data", "plugin_data", "WeakBlacklist"),  # 之前的迁移目录
+            Path("data", "WeakBlacklist"),  # 最早的目录
+            Path("data", "plugin_data", "WeakBlacklist"),  # 之前的迁移目录
+            Path("data", "plugin_data", "astrbot_plugin_random_reply"),  # 旧硬编码路径
         ]
         
         # 检查新目录是否已有数据
-        new_files = os.listdir(self.data_dir) if os.path.exists(self.data_dir) else []
-        if new_files:
+        if self.data_dir.exists() and any(self.data_dir.iterdir()):
             logger.debug("[RandomReply] 新目录已有数据，跳过迁移")
             return
         
         # 尝试从旧目录迁移
         for old_data_dir in old_dirs:
-            if os.path.exists(old_data_dir) and os.path.isdir(old_data_dir):
-                old_files = os.listdir(old_data_dir)
+            # 旧路径解析后与新路径相同时跳过，避免自己迁移自己
+            if old_data_dir.resolve() == self.data_dir.resolve():
+                continue
+            if old_data_dir.exists() and old_data_dir.is_dir():
+                old_files = list(old_data_dir.iterdir())
                 if old_files:
-                    os.makedirs(self.data_dir, exist_ok=True)
+                    self.data_dir.mkdir(parents=True, exist_ok=True)
                     logger.info(f"[RandomReply] 检测到旧数据目录，开始迁移: {old_data_dir} -> {self.data_dir}")
-                    for filename in old_files:
-                        old_path = os.path.join(old_data_dir, filename)
-                        new_path = os.path.join(self.data_dir, filename)
-                        if os.path.isfile(old_path):
-                            shutil.copy2(old_path, new_path)
-                            logger.info(f"[RandomReply] 迁移文件: {filename}")
+                    for old_path in old_files:
+                        if old_path.is_file():
+                            shutil.copy2(old_path, self.data_dir / old_path.name)
+                            logger.info(f"[RandomReply] 迁移文件: {old_path.name}")
                     logger.info(f"[RandomReply] 数据迁移完成，旧目录保留供备份: {old_data_dir}")
                     return  # 迁移成功后退出
 
@@ -488,16 +490,15 @@ class WeakBlacklistPlugin(Star):
         super().__init__(context)
         self.config = config
         
-        # 初始化数据目录和文件路径（按AstrBot规则使用插件注册名）
-        self.data_dir = os.path.join("data", "plugin_data", "astrbot_plugin_random_reply")
+        # 初始化数据目录和文件路径（使用框架标准接口）
+        self.data_dir: Path = StarTools.get_data_dir("astrbot_plugin_random_reply")
         
         # 自动数据迁移：从旧目录迁移到新目录
         self._migrate_data_if_needed()
         
-        os.makedirs(self.data_dir, exist_ok=True)
-        self.user_counters_path = os.path.join(self.data_dir, "user_interception_counters.json")
-        self.group_counters_path = os.path.join(self.data_dir, "group_interception_counters.json")
-        self.managed_blacklist_path = os.path.join(self.data_dir, "managed_blacklist.json")
+        self.user_counters_path = self.data_dir / "user_interception_counters.json"
+        self.group_counters_path = self.data_dir / "group_interception_counters.json"
+        self.managed_blacklist_path = self.data_dir / "managed_blacklist.json"
         
         # 初始化运行时数据
         self.user_interception_counters: Dict[str, int] = {}
