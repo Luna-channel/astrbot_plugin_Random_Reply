@@ -4,6 +4,7 @@ from astrbot.api import logger, AstrBotConfig, llm_tool
 import random
 import os
 import json
+import shutil
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Set, List, Any
 
@@ -455,8 +456,6 @@ class WeakBlacklistPlugin(Star):
 
     def _migrate_data_if_needed(self):
         """从旧数据目录迁移到新目录"""
-        import shutil
-        
         # 支持多个旧目录（按优先级顺序）
         old_dirs = [
             Path("data", "WeakBlacklist"),  # 最早的目录
