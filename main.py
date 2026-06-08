@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict, Set, List, Any
 
 
-@register("astrbot_plugin_random_reply", "柯尔", "rrbot机器人防尬聊插件", "v1.0.1", "https://github.com/Luna-channel/random-reply")
+@register("astrbot_plugin_random_reply", "柯尔", "rrbot机器人防尬聊插件", "v1.1", "https://github.com/Luna-channel/random-reply")
 class WeakBlacklistPlugin(Star):
     """弱黑名单插件 - 防止多个机器人在群聊中无限对话"""
     
@@ -159,9 +159,33 @@ class WeakBlacklistPlugin(Star):
 
         return False, None, None
 
+    def _get_blocked_message_keywords(self) -> List[str]:
+        """获取消息硬屏蔽关键词列表。"""
+        keywords = self.config.get("blocked_message_keywords", ["🔨 调用工具:"])
+        if not isinstance(keywords, list):
+            return []
+        return [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
+
+    def _match_blocked_message_keyword(self, message: str) -> Optional[str]:
+        """匹配消息硬屏蔽关键词。"""
+        for keyword in self._get_blocked_message_keywords():
+            if keyword in (message or ""):
+                return keyword
+        return None
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def check_weak_blacklist(self, event: AstrMessageEvent):
         """检查弱黑名单并进行概率判断，包含保底回复机制"""
+        # 机器人间噪声消息直接屏蔽且不进入保底计数。
+        matched_keyword = self._match_blocked_message_keyword(event.message_str or "")
+        if matched_keyword:
+            if bool(self.config.get("log_blocked_messages", True)):
+                message_preview = event.message_str[:50] + ("..." if len(event.message_str) > 50 else "")
+                logger.info(f"消息关键词硬屏蔽 - 命中关键词: {matched_keyword}, 消息: {message_preview}")
+            event.set_result(event.plain_result(""))
+            event.stop_event()
+            return
+
         # 检查是否在黑名单中
         is_blacklisted, blacklist_type, target_id = self._check_blacklist_status(event)
         

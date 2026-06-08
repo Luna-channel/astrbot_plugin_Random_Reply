@@ -80,5 +80,14 @@
     "type": "bool",
     "default": true,
     "hint": "开启后会在日志中记录哪些消息因弱黑名单被拦截"
+  },
+  "blocked_message_keywords": {
+    "description": "消息硬屏蔽关键词列表",
+    "type": "list",
+    "default": ["🔨 调用工具:"],
+    "hint": "消息文本包含任一关键词时将被直接屏蔽，不进入弱黑名单概率判断，也不会增加保底计数。默认用于屏蔽 AstrBot 工具调用状态消息。",
+    "items": {
+      "type": "string"
+    }
   }
 }
